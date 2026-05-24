@@ -59,8 +59,9 @@ def build_correlation_matrix(corr_cfg: dict) -> np.ndarray:
 
 def main(args):
     print("=" * 60)
-    print("  HKRBC ESG Generator v1.0")
-    print("  Cap. 41R Rule 19 — Market-Consistent Scenarios")
+    print("  HKRBC ESG Generator v1.1")
+    print("  Q-mode: HKRBC TVOG / IFRS 17 MRB（风险中性）")
+    print("  P-mode: ALM / SAA / ORSA（真实世界）")
     print("=" * 60)
 
     # ── 1. 加载配置 ──────────────────────────────────────────
@@ -93,25 +94,30 @@ def main(args):
     Z_full = np.concatenate([Z_half, -Z_half], axis=1)  # shape (n_factors, n_scenarios, n_steps)
     Z_ir, Z_eq, Z_cs, Z_fx = Z_full[0], Z_full[1], Z_full[2], Z_full[3]
 
-    # ── 4. Hull-White 1F 利率模拟 ────────────────────────────
+    # ── 4. 按模式选择参数 ────────────────────────────────────
+    mode = cfg.get("mode", "Q").upper()
+    print(f"\n[模式] {'Q-measure（风险中性）→ HKRBC TVOG / IFRS 17' if mode == 'Q' else 'P-measure（真实世界）→ ALM / SAA / ORSA'}")
+
+    # ── 5. Hull-White 1F 利率模拟 ────────────────────────────
     hw_cfg = cfg["hull_white_1f"]
-    hw = HullWhite1F(a=hw_cfg["a"], sigma=hw_cfg["sigma"], yc=yc)
-    print(f"[HW1F] a={hw_cfg['a']}, σ={hw_cfg['sigma']} | 正在生成 {n_scenarios} 条利率路径...")
-    # 将相关随机数 Z_ir 传入，与股票/信用等因子保持正确相关性结构
-    # 同时启用对偶变量法（antithetic variates）大幅提升 martingale test 通过率
+    term_premium = hw_cfg.get(f"term_premium_{mode}", 0.0)
+    hw = HullWhite1F(a=hw_cfg["a"], sigma=hw_cfg["sigma"], yc=yc, term_premium=term_premium)
+    print(f"[HW1F] a={hw_cfg['a']}, σ={hw_cfg['sigma']}, term_premium={term_premium:.4f}")
+    print(f"       正在生成 {n_scenarios} 条利率路径...")
     r_paths, disc_factors = hw.simulate(
         n_scenarios, n_steps, dt, seed=seed,
         Z_external=Z_ir,
-        antithetic=False,  # 已通过外部 Cholesky 控制相关性，不再额外做对偶
+        antithetic=False,
     )
-    print(f"       利率路径生成完成。r(0)={r_paths[0,0]:.4f}")
+    print(f"       完成。r(0)={r_paths[0,0]:.4f}，长端均值比 Q-mode {'高' if term_premium > 0 else '相同'} {term_premium*100:.1f}%")
 
-    # ── 5. GBM 股票总回报模拟 ────────────────────────────────
+    # ── 6. GBM 股票总回报模拟 ────────────────────────────────
     eq_cfg = cfg["equity"]
-    equity = EquityGBM(sigma_eq=eq_cfg["sigma_eq"], s0=eq_cfg["s0"])
-    print(f"[Equity] σ_eq={eq_cfg['sigma_eq']:.0%} | 正在生成股票路径...")
+    erp = eq_cfg.get(f"equity_risk_premium_{mode}", 0.0)
+    equity = EquityGBM(sigma_eq=eq_cfg["sigma_eq"], s0=eq_cfg["s0"], equity_risk_premium=erp)
+    print(f"[Equity] σ_eq={eq_cfg['sigma_eq']:.0%}, ERP={erp:.1%} | 正在生成股票路径...")
     _, eq_tr = equity.simulate(r_paths, dt, corr_Z=Z_eq)
-    print(f"         股票路径生成完成。")
+    print(f"         完成。期望年化回报 ≈ r(0) + ERP = {r_paths[0,0] + erp:.2%}")
 
     # ── 6. 信用利差模拟（OU 过程，简化）─────────────────────
     cs_cfg = cfg["credit_spread"]
@@ -125,24 +131,26 @@ def main(args):
         )
     cs_paths = np.clip(cs_paths, 0, None)  # 信用利差不能为负
 
-    # ── 7. Martingale Test ───────────────────────────────────
+    # ── 7. Martingale Test（仅 Q-mode）──────────────────────
     mt_cfg = cfg["martingale_test"]
-    print("\n[Martingale Test] 正在验证情景的市场一致性...")
-    bond_result = test_bond_martingale(
-        disc_factors, yc, dt,
-        check_tenors=mt_cfg["check_tenors"],
-        tolerance=mt_cfg["tolerance"]
-    )
-    eq_result = test_equity_martingale(
-        disc_factors, eq_tr, dt=dt,
-        tolerance=mt_cfg["tolerance"],
-        max_check_tenor=max(mt_cfg["check_tenors"]),
-    )
-    print_report(bond_result, eq_result)
-
-    if not (bond_result["all_passed"] and eq_result["all_passed"]):
-        print("\n⚠️  建议：调整 HW1F 参数（a, σ）或增加情景数量后重试。")
-        print("     参考方向：误差偏大通常因 n_scenarios 过少或参数校准不足。")
+    if mode == "Q":
+        print("\n[Martingale Test] Q-mode：验证情景的市场一致性（Rule 19 要求）...")
+        bond_result = test_bond_martingale(
+            disc_factors, yc, dt,
+            check_tenors=mt_cfg["check_tenors"],
+            tolerance=mt_cfg["tolerance"]
+        )
+        eq_result = test_equity_martingale(
+            disc_factors, eq_tr, dt=dt,
+            tolerance=mt_cfg["tolerance"],
+            max_check_tenor=max(mt_cfg["check_tenors"]),
+        )
+        print_report(bond_result, eq_result)
+        if not (bond_result["all_passed"] and eq_result["all_passed"]):
+            print("\n⚠️  建议：调整 HW1F 参数（a, σ）或增加情景数量后重试。")
+    else:
+        print("\n[Martingale Test] P-mode：跳过（Real-World 情景的期望值 ≠ 市场价格，这是正常的）")
+        print("  P-mode 验证方式：比较情景分布与历史数据（均值、波动率、分位数）是否吻合。")
 
     # ── 8. 导出情景文件 ──────────────────────────────────────
     out_cfg = cfg["output"]

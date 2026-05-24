@@ -1,72 +1,92 @@
 # HKRBC ESG Generator 配置文件
-# 对应 IA Schedule 4 / Cap. 41R Rule 19 要求
+# 支持两种模式：
+#   mode: Q  → Risk-Neutral（风险中性），用于 HKRBC TVOG / IFRS 17 MRB
+#   mode: P  → Real-World（真实世界），用于 ALM / SAA / ORSA
+#
+# 两种模式使用同一套代码框架，只需切换参数。
+# ─────────────────────────────────────────────────────────────────────
 
-# ── 模拟参数 ────────────────────────────────────────────
+# ── 模式选择 ─────────────────────────────────────────────────────────
+mode: Q   # 改为 P 即切换至 ALM/ORSA 真实世界模式
+
+# ── 模拟参数 ─────────────────────────────────────────────────────────
 simulation:
-  n_scenarios: 1000        # HKRBC 最低要求 1,000 条
-  projection_years: 30     # 最长预测年限（年）
-  time_step: monthly       # monthly = 1/12 年；可选 quarterly / annual
-  random_seed: 42          # 固定种子确保结果可重现
+  # Q-mode：HKRBC Rule 19 最低 1,000 条；P-mode：100–500 条足够
+  n_scenarios: 1000
+  projection_years: 30
+  time_step: monthly        # monthly = 1/12 年
+  random_seed: 42
 
-# ── 货币选择 ────────────────────────────────────────────
-currency: HKD              # 可选：HKD / USD / CNY / EUR
+# ── 货币 ─────────────────────────────────────────────────────────────
+currency: HKD
 
-# ── IA Schedule 4 零息利率曲线（HKD）────────────────────
-# 来源：IA 官网每季发布；UFR 参见 G.N. 4006 of 2024
-# 以下为示例数值（实际使用时请替换为最新 IA 数据）
+# ── IA Schedule 4 零息利率曲线（两种模式共用作为初始条件）──────────
+# 来源：IA 官网每季发布；UFR 见 G.N. 4006 of 2024
 ia_schedule4:
   maturities: [1, 2, 3, 4, 5, 7, 10, 15, 20, 25, 30]
   spot_rates:  [0.0335, 0.0340, 0.0342, 0.0344, 0.0346,
                 0.0350, 0.0355, 0.0362, 0.0368, 0.0374, 0.0380]
-  ufr: 0.038               # Ultimate Forward Rate（HKD/USD）：3.8%
-  llp: 15                  # Last Liquid Point（年）：HKD 为 15 年
+  ufr: 0.038    # Ultimate Forward Rate（HKD/USD）：3.8%（G.N. 4006/2024）
+  llp: 15       # Last Liquid Point（年）
 
-# ── Hull-White 1-Factor 参数（利率模型）───────────────────
-# 校准目标：HKD swaption vol cube（Bloomberg HDSV）
-# 以下为典型值，建议按最新 swaption vol 重新校准
+# ── Hull-White 1-Factor 利率模型参数 ─────────────────────────────────
 hull_white_1f:
-  a: 0.05                  # 均值回归速度（mean reversion）：0.01–0.20
-  sigma: 0.010             # 利率波动率：通常 0.005–0.020（单位：年化）
-  # 校准方法：最小化模型 ATM swaption IV 与市场 IV 的均方误差
-  # 参见 src/calibration.py（待实现）
+  a: 0.05       # 均值回归速度（Q 和 P 共用，建议相同）
+  sigma: 0.010  # 利率波动率（Q 和 P 通常相同，均由历史数据/swaption vol 决定）
 
-# ── GBM 股票模型参数（Q-measure）───────────────────────────
+  # ── Q-measure 专用（TVOG）─────────────────────────────────────────
+  # term_premium = 0：θ(t) 完全由 IA Sch.4 forward rate 决定
+  # 效果：模型精确拟合初始 yield curve，通过 martingale test
+  term_premium_Q: 0.000
+
+  # ── P-measure 专用（ALM/ORSA）────────────────────────────────────
+  # term_premium > 0：长端均值 = forward rate + term_premium
+  # 效果：长期利率比市场 forward rate 更高，反映投资者对持有长期债券的风险补偿
+  # 典型值：0.005–0.015（HKD 50–150bps 期限溢价）
+  term_premium_P: 0.008   # 80bps，参考 HKMA 研究及历史期限溢价估算
+
+# ── GBM 股票总回报模型 ─────────────────────────────────────────────
 equity:
-  sigma_eq: 0.20           # 股票年化波动率（HSI 历史波动率约 18%–22%）
-  s0: 1.0                  # 初始指数（标准化为 1.0）
-  # 股息率（用于 total return，若无数据可设为 0）
-  dividend_yield: 0.03
+  sigma_eq: 0.20    # 年化股票波动率（Q 和 P 共用，HSI 历史波动率约 18%–22%）
+  s0: 1.0
 
-# ── 信用利差模型（简化：均值回归 OU 过程）──────────────────
+  # ── Q-measure 专用（TVOG）────────────────────────────────────────
+  # equity_risk_premium = 0：drift = r(t)，无套利，martingale test 通过
+  equity_risk_premium_Q: 0.000
+
+  # ── P-measure 专用（ALM/ORSA）───────────────────────────────────
+  # equity_risk_premium > 0：drift = r(t) + ERP
+  # 效果：股票期望年化回报 ≈ r + ERP ≈ 3.5% + 5.5% = 9%（长期平均）
+  # 典型值：0.050–0.070（HK/全球股票历史超额回报约 5%–7%）
+  equity_risk_premium_P: 0.055   # 5.5% ERP
+
+# ── 信用利差（OU 过程，Q 和 P 通用）─────────────────────────────────
 credit_spread:
-  cs0: 0.0085              # 初始信用利差（HKD IG 债券约 85bps）
-  mean_cs: 0.0080          # 长期均值
-  kappa_cs: 0.15           # 均值回归速度
-  sigma_cs: 0.0025         # 信用利差波动率
+  cs0: 0.0085        # 初始信用利差（HKD IG 约 85bps）
+  mean_cs: 0.0080    # 长期均值
+  kappa_cs: 0.15     # 均值回归速度
+  sigma_cs: 0.0025   # 波动率
 
-# ── 相关性矩阵（IR, EQ, CS, FX）────────────────────────────
-# 基于 HK 市场历史数据（2010–2024）
+# ── 相关性矩阵（IR, EQ, CS, FX；Q 和 P 通常相近）──────────────────
 correlation:
-  ir_eq:  -0.20            # 利率与股票负相关（利率上，股票跌）
-  ir_cs:  -0.30            # 利率与信用利差负相关（risk-on 时两者均降）
+  ir_eq:  -0.20
+  ir_cs:  -0.30
   ir_fx:   0.10
-  eq_cs:   0.40            # 股票与信用利差正相关
+  eq_cs:   0.40
   eq_fx:  -0.15
   cs_fx:  -0.10
 
-# ── Martingale Test 参数 ────────────────────────────────────
+# ── Martingale Test（仅 Q-mode 需要）──────────────────────────────
 martingale_test:
-  tolerance: 0.010         # 允许误差 1.0%（开源版本；商业软件通常 0.5%–2.0%）
-  # 注：股票鞅检验在 T>15Y 时，因 σ_eq=20% 导致 disc*S 的抽样标准误 ≈ ±5%（N=1000），
-  #     物理上无法用 1,000 条情景通过 ±1% 精度。Bond 鞅检验 15Y 内通过。
-  #     如需 20-30Y 精度，需将 n_scenarios 增至 10,000+（实务中非必须）
-  check_tenors: [1, 2, 3, 5, 7, 10, 15]    # Par Fund TVOG 实际使用期限 ≤ 15Y
+  # Q-mode 必须通过；P-mode 跳过（P-measure 下期望值 ≠ 市场价格，这是正常的）
+  tolerance: 0.010
+  check_tenors: [1, 2, 3, 5, 7, 10, 15]
 
-# ── 输出设置 ────────────────────────────────────────────────
+# ── 输出设置 ──────────────────────────────────────────────────────
 output:
   csv_path: "output/esg_scenarios.csv"
   esc_path: "output/esg_scenarios.ESC"
   summary_path: "output/esg_summary.csv"
   save_csv: true
-  save_esc: true           # Prophet .ESC 格式
+  save_esc: true
   save_summary: true

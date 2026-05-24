@@ -1,24 +1,27 @@
 """
 hw1f.py
 =======
-Hull-White 单因子（HW1F）利率模型，Q-measure 下精确离散化模拟。
-用于 HKRBC TVOG 计算（Cap. 41R Rule 19）。
+Hull-White 单因子（HW1F）利率模型，支持 Q-measure（TVOG）和 P-measure（ALM/ORSA）。
 
-模型 SDE（Q-measure）：
+── Q-measure（Risk-Neutral，HKRBC TVOG 用）──────────────────────────────
     dr(t) = [θ(t) - a·r(t)] dt + σ·dW^Q(t)
+    θ(t) 由 IA Sch.4 yield curve 唯一确定：
+      θ(t) = ∂f(0,t)/∂t + a·f(0,t) + σ²/(2a)·(1-e^{-2at})
+    特征：精确拟合初始 yield curve，通过 martingale test，用于 TVOG 定价。
 
-其中 θ(t) 由初始收益曲线唯一确定，确保模型精确拟合初始 yield curve：
-    θ(t) = ∂f(0,t)/∂t + a·f(0,t) + σ²/(2a)·(1 - e^{-2at})
+── P-measure（Real-World，ALM/SAA/ORSA 用）──────────────────────────────
+    dr(t) = [θ_P(t) - a·r(t)] dt + σ·dW^P(t)
+    θ_P(t) = θ(t) + a·λ(t)   其中 λ(t) = term_premium（利率风险溢价）
+    实际效果：长端均值 = forward rate + term_premium（约 +0.5–1.5%）
+    特征：长期利率比 Q-measure 更高（反映真实世界投资者要求的利率风险补偿）。
+    不通过 martingale test（P-measure 下期望值 ≠ 市场价格，这是正常的）。
 
-精确离散化（Exact discretization）：
+精确离散化（两种 measure 共用）：
     r(t+Δt) | r(t) ~ Normal(μ(t), v²(Δt))
-    μ(t)   = r(t)·e^{-aΔt} + α(t+Δt) - α(t)·e^{-aΔt}
+    μ(t)   = r(t)·e^{-aΔt} + α_eff(t+Δt) - α_eff(t)·e^{-aΔt}
     v²(Δt) = σ²/(2a)·(1 - e^{-2aΔt})
 
-其中辅助函数：
-    α(t) = f(0,t) + σ²/(2a²)·(1 - e^{-at})²
-
-HKRBC 要求：≥1,000 条情景，市场一致，无套利（martingale test）。
+HKRBC 要求：Q-measure ≥1,000 条，market-consistent，无套利（martingale test）。
 """
 
 import numpy as np
@@ -27,28 +30,35 @@ from src.yield_curve import YieldCurve
 
 class HullWhite1F:
     """
-    Hull-White 1-Factor 利率模型（Q-measure）。
+    Hull-White 1-Factor 利率模型，支持 Q-measure 和 P-measure。
 
     参数
     ----
-    a     : float，均值回归速度（mean reversion speed），通常 0.01–0.20
-    sigma : float，利率波动率，通常 0.005–0.025
-    yc    : YieldCurve，初始 IA Schedule 4 yield curve 对象
+    a            : float，均值回归速度，通常 0.01–0.20
+    sigma        : float，利率波动率，通常 0.005–0.025
+    yc           : YieldCurve，初始 IA Schedule 4 yield curve 对象
+    term_premium : float，利率期限溢价（P-measure 专用，Q-measure 设为 0）
+                   典型值：HKD 约 0.005–0.015（0.5%–1.5%）
     """
 
-    def __init__(self, a: float, sigma: float, yc: YieldCurve):
+    def __init__(self, a: float, sigma: float, yc: YieldCurve, term_premium: float = 0.0):
         self.a = a
         self.sigma = sigma
         self.yc = yc
+        self.term_premium = term_premium  # Q-measure: 0.0；P-measure: 约 0.008
 
     def alpha(self, t: float) -> float:
         """
-        辅助函数 α(t)：用于精确离散化，吸收初始 yield curve 的影响。
-        α(t) = f(0,t) + σ²/(2a²)·(1 - e^{-at})²
+        辅助函数 α_eff(t)：精确离散化的长期均值调整项。
+
+        Q-measure：α(t) = f(0,t) + σ²/(2a²)·(1-e^{-at})²
+        P-measure：α_P(t) = f(0,t) + term_premium + σ²/(2a²)·(1-e^{-at})²
+                   即在 Q-measure 基础上加一个常数 term_premium，
+                   使长端利率均值高于市场 forward rate，反映真实世界期望。
         """
         a, sigma = self.a, self.sigma
         f0t = self.yc.forward_rate(t)
-        return f0t + (sigma ** 2 / (2 * a ** 2)) * (1 - np.exp(-a * t)) ** 2
+        return f0t + self.term_premium + (sigma ** 2 / (2 * a ** 2)) * (1 - np.exp(-a * t)) ** 2
 
     def simulate(
         self,
