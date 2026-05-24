@@ -5,3 +5,4 @@ output/
 *.ESC
 *.csv
 .DS_Store
+.vercel

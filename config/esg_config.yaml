@@ -1,92 +1,147 @@
-# HKRBC ESG Generator 配置文件
+# HKRBC ESG Generator 配置文件 v2.0
+# ══════════════════════════════════════════════════════════════════
 # 支持两种模式：
 #   mode: Q  → Risk-Neutral（风险中性），用于 HKRBC TVOG / IFRS 17 MRB
 #   mode: P  → Real-World（真实世界），用于 ALM / SAA / ORSA
 #
-# 两种模式使用同一套代码框架，只需切换参数。
-# ─────────────────────────────────────────────────────────────────────
+# 支持三种利率模型（ir_model 字段）：
+#   ir_model: HW1F  → Hull-White 1-Factor（起步首选，2 参数）
+#   ir_model: HW2F  → Hull-White 2-Factor / G2++（主流生产，5 参数）
+#   ir_model: LMM   → LIBOR Market Model（精确 vol surface，N+ 参数）
+#
+# 六类风险因子全部支持输出：
+#   IR（利率）、EQ（股票）、CS（信用利差）、FX（汇率）、PR（房地产）、INF（通胀）
+# ══════════════════════════════════════════════════════════════════
 
-# ── 模式选择 ─────────────────────────────────────────────────────────
-mode: Q   # 改为 P 即切换至 ALM/ORSA 真实世界模式
+# ── 模式选择 ─────────────────────────────────────────────────────
+mode: Q         # 改为 P 切换至 ALM/ORSA 真实世界模式
 
-# ── 模拟参数 ─────────────────────────────────────────────────────────
+# ── 利率模型选择 ─────────────────────────────────────────────────
+ir_model: HW1F  # 可选：HW1F / HW2F / LMM
+
+# ── 模拟参数 ─────────────────────────────────────────────────────
 simulation:
-  # Q-mode：HKRBC Rule 19 最低 1,000 条；P-mode：100–500 条足够
-  n_scenarios: 1000
+  n_scenarios: 1000      # Q-mode：≥1000（Rule 19）；P-mode：100–500 足够
   projection_years: 30
-  time_step: monthly        # monthly = 1/12 年
+  time_step: monthly     # monthly = 1/12 年
   random_seed: 42
 
-# ── 货币 ─────────────────────────────────────────────────────────────
+# ── 货币 ─────────────────────────────────────────────────────────
 currency: HKD
 
-# ── IA Schedule 4 零息利率曲线（两种模式共用作为初始条件）──────────
-# 来源：IA 官网每季发布；UFR 见 G.N. 4006 of 2024
+# ── IA Schedule 4 零息利率曲线（所有 IR 模型共用初始条件）──────────
 ia_schedule4:
   maturities: [1, 2, 3, 4, 5, 7, 10, 15, 20, 25, 30]
   spot_rates:  [0.0335, 0.0340, 0.0342, 0.0344, 0.0346,
                 0.0350, 0.0355, 0.0362, 0.0368, 0.0374, 0.0380]
-  ufr: 0.038    # Ultimate Forward Rate（HKD/USD）：3.8%（G.N. 4006/2024）
+  ufr: 0.038    # Ultimate Forward Rate：3.8%（G.N. 4006/2024）
   llp: 15       # Last Liquid Point（年）
 
-# ── Hull-White 1-Factor 利率模型参数 ─────────────────────────────────
+# ══ 利率模型参数 ═════════════════════════════════════════════════
+
+# ── HW1F 参数（ir_model: HW1F 时生效）────────────────────────────
 hull_white_1f:
-  a: 0.05       # 均值回归速度（Q 和 P 共用，建议相同）
-  sigma: 0.010  # 利率波动率（Q 和 P 通常相同，均由历史数据/swaption vol 决定）
+  a: 0.05       # 均值回归速度
+  sigma: 0.010  # 利率波动率
+  term_premium_Q: 0.000   # Q-mode：0（精确拟合市场）
+  term_premium_P: 0.008   # P-mode：80bps 期限溢价
 
-  # ── Q-measure 专用（TVOG）─────────────────────────────────────────
-  # term_premium = 0：θ(t) 完全由 IA Sch.4 forward rate 决定
-  # 效果：模型精确拟合初始 yield curve，通过 martingale test
+# ── HW2F / G2++ 参数（ir_model: HW2F 时生效）──────────────────────
+hull_white_2f:
+  a: 0.05       # x 因子（慢，驱动水平）均值回归速度
+  b: 0.50       # y 因子（快，驱动斜率）均值回归速度
+  sigma1: 0.010 # x 因子波动率
+  sigma2: 0.015 # y 因子波动率
+  rho_xy: -0.80 # x-y 因子相关性（典型 -0.7 至 -0.9）
   term_premium_Q: 0.000
+  term_premium_P: 0.008
 
-  # ── P-measure 专用（ALM/ORSA）────────────────────────────────────
-  # term_premium > 0：长端均值 = forward rate + term_premium
-  # 效果：长期利率比市场 forward rate 更高，反映投资者对持有长期债券的风险补偿
-  # 典型值：0.005–0.015（HKD 50–150bps 期限溢价）
-  term_premium_P: 0.008   # 80bps，参考 HKMA 研究及历史期限溢价估算
+# ── LMM 参数（ir_model: LMM 时生效）─────────────────────────────
+lmm:
+  # tenor 网格：1Y, 2Y, ..., 30Y（共 30 个 forward rate）
+  tenors: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+           16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
+  # 各 tenor 的 forward rate 年化 vol（可用单一数值或列表）
+  # 简化：短端高、长端低（vol 从 15% 到 10% 单调递减）
+  sigma_vols: 0.12         # 统一 vol（简化），或可指定列表
+  rho_decay: 0.10          # 相关性指数衰减参数 λ，ρ_{ij}=exp(-λ|i-j|)
 
-# ── GBM 股票总回报模型 ─────────────────────────────────────────────
+# ══ 股票模型参数（所有 IR 模型共用）═════════════════════════════
+
 equity:
-  sigma_eq: 0.20    # 年化股票波动率（Q 和 P 共用，HSI 历史波动率约 18%–22%）
+  sigma_eq: 0.20           # 年化股票波动率（HSI 历史约 18%–22%）
   s0: 1.0
+  equity_risk_premium_Q: 0.000   # Q-mode：drift = r(t)
+  equity_risk_premium_P: 0.055   # P-mode：drift = r(t) + 5.5% ERP
 
-  # ── Q-measure 专用（TVOG）────────────────────────────────────────
-  # equity_risk_premium = 0：drift = r(t)，无套利，martingale test 通过
-  equity_risk_premium_Q: 0.000
+# ══ 信用利差（CIR 过程）══════════════════════════════════════════
 
-  # ── P-measure 专用（ALM/ORSA）───────────────────────────────────
-  # equity_risk_premium > 0：drift = r(t) + ERP
-  # 效果：股票期望年化回报 ≈ r + ERP ≈ 3.5% + 5.5% = 9%（长期平均）
-  # 典型值：0.050–0.070（HK/全球股票历史超额回报约 5%–7%）
-  equity_risk_premium_P: 0.055   # 5.5% ERP
-
-# ── 信用利差（OU 过程，Q 和 P 通用）─────────────────────────────────
 credit_spread:
-  cs0: 0.0085        # 初始信用利差（HKD IG 约 85bps）
-  mean_cs: 0.0080    # 长期均值
-  kappa_cs: 0.15     # 均值回归速度
-  sigma_cs: 0.0025   # 波动率
+  model: CIR              # 已从 OU 升级为 CIR（严格正值）
+  cs0: 0.0085             # 初始信用利差（85bps，HKD IG 约）
+  mu: 0.0080              # 长期均值（80bps）
+  kappa: 0.15             # 均值回归速度
+  sigma: 0.025            # 波动率系数（CIR 的 σ·√cs 扩散）
+  # Feller 条件校验：2κμ = 0.0024 > σ² = 0.000625 ✅
 
-# ── 相关性矩阵（IR, EQ, CS, FX；Q 和 P 通常相近）──────────────────
+# ══ 汇率（Garman-Kohlhagen）════════════════════════════════════
+
+fx:
+  enabled: true
+  sigma_fx: 0.001         # FX 年化波动率：
+                           #   HKD/USD = 0.001（联系汇率，极小）
+                           #   HKD/RMB = 0.030（CNH 约 3%）
+  r_f: 0.045              # 外币无风险利率（如 USD SOFR 约 4.5%）
+  s0: 1.0                 # 初始汇率（标准化）
+
+# ══ 房地产回报（Proxy to Equity）═══════════════════════════════
+
+property_return:
+  enabled: true
+  beta: 0.60              # 股票-房地产敏感度（波动率约为股票的 60%）
+  lag_steps: 4            # 时间滞后步数（月步长时 4步 = 4个月约滞后）
+  sigma_idio: 0.08        # 独立波动率（房地产特有，约 8%）
+  prop0: 1.0              # 初始指数水平
+
+# ══ 通货膨胀（OU 过程）═════════════════════════════════════════
+
+inflation:
+  enabled: true
+  pi0: 0.020              # 初始通胀率（2.0%，HK 2024 水平）
+  mu_pi: 0.030            # 长期通胀均值（3.0%，HK 历史中枢）
+  kappa_pi: 0.20          # 均值回归速度（半衰期约 3.5 年）
+  sigma_pi: 0.015         # 通胀波动率（1.5%）
+  # 通胀独立于其他因子（简化假设），可通过 correlation.infl_* 引入相关
+
+# ══ 相关性矩阵（IR, EQ, CS, FX；6×6 含 INF）════════════════════
+
 correlation:
-  ir_eq:  -0.20
-  ir_cs:  -0.30
-  ir_fx:   0.10
-  eq_cs:   0.40
-  eq_fx:  -0.15
-  cs_fx:  -0.10
+  # 4 个主因子（用于 Cholesky 生成相关随机数）
+  ir_eq:  -0.20    # 利率与股票：负相关（利率升 → 股价压）
+  ir_cs:  -0.30    # 利率与信用利差：负相关（经济好时利率升、利差缩）
+  ir_fx:   0.10    # 利率与汇率：正相关（利率升 → 本币升值）
+  eq_cs:   0.40    # 股票与信用利差：正相关（股跌时利差扩）
+  eq_fx:  -0.15    # 股票与汇率：弱负
+  cs_fx:  -0.10    # 信用利差与汇率：弱负
+  # 通胀独立（简化，通胀随机数独立生成）
 
-# ── Martingale Test（仅 Q-mode 需要）──────────────────────────────
+# ══ Martingale Test（仅 Q-mode 需要）═══════════════════════════
+
 martingale_test:
-  # Q-mode 必须通过；P-mode 跳过（P-measure 下期望值 ≠ 市场价格，这是正常的）
-  tolerance: 0.010
+  # Q-mode：HW1F/HW2F 必须通过；LMM 通过 forward rate 结构保证
+  # P-mode：自动跳过
+  tolerance: 0.010        # 允许误差 1%（Rule 19 实践容忍）
   check_tenors: [1, 2, 3, 5, 7, 10, 15]
 
-# ── 输出设置 ──────────────────────────────────────────────────────
+# ══ 输出设置 ════════════════════════════════════════════════════
+
 output:
-  csv_path: "output/esg_scenarios.csv"
-  esc_path: "output/esg_scenarios.ESC"
+  csv_path:     "output/esg_scenarios.csv"
+  esc_path:     "output/esg_scenarios.ESC"
   summary_path: "output/esg_summary.csv"
-  save_csv: true
-  save_esc: true
+  save_csv:     true
+  save_esc:     true
   save_summary: true
+  # 输出列：scenario, time_yr, rfr_short, disc_factor,
+  #         eq_total_return, credit_spread, fx_rate,
+  #         prop_return, cpi_index, inflation_rate
