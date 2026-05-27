@@ -4,5 +4,7 @@ __pycache__/
 output/
 *.ESC
 *.csv
+# 保留参考数据文件
+!data/swaption_vols_hkd.csv
 .DS_Store
 .vercel

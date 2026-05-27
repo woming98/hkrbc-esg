@@ -1,0 +1,26 @@
+# HKD ATM Swaption Normal (Bachelier) Implied Vols — 参考值
+# 来源：基于 2024 年 HKD IRS 市场水平的近似参考值，非实时数据
+# 替换方式：将 Bloomberg SWPN normal vol 数据填入此文件后重新运行 run_calibrate.py
+#
+# 字段说明：
+#   expiry_yr      : swaption 到期年限（option expiry, years）
+#   tenor_yr       : 标的 swap 期限（swap tenor, years）
+#   normal_vol_bps : ATM normal (Bachelier) implied vol，单位 bps/year
+#   weight         : 校准权重（1.0 = 等权；可调高流动性好的 tenor 的权重）
+expiry_yr,tenor_yr,normal_vol_bps,weight
+1,1,58.0,1.0
+1,5,72.0,1.5
+1,10,76.0,1.5
+1,20,73.0,1.0
+2,1,62.0,1.0
+2,5,76.0,1.5
+2,10,80.0,2.0
+2,20,77.0,1.5
+5,1,64.0,1.0
+5,5,72.0,2.0
+5,10,75.0,2.0
+5,20,72.0,1.5
+10,1,56.0,1.0
+10,5,64.0,1.5
+10,10,67.0,1.5
+10,20,64.0,1.0
